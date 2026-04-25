@@ -1,0 +1,11 @@
+# Ignore everything
+*
+
+# Allow these
+!lib/
+!lib/**
+!pubspec.yaml
+!pubspec.lock
+
+# Keep gitignore itself
+!.gitignore
