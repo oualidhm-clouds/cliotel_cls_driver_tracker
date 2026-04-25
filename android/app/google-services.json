@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "937701535388",
+    "firebase_url": "https://cliotel-cls-driver-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "cliotel-cls-driver",
+    "storage_bucket": "cliotel-cls-driver.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:937701535388:android:7b893ec94fae7e7d434759",
+        "android_client_info": {
+          "package_name": "com.cliotel.cliotel_driver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB6zyYDLEfq1HgdQhP6SG7DvykOOBtMlEw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
