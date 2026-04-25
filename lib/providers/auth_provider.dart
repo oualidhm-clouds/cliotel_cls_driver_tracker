@@ -28,25 +28,17 @@ class AuthProvider with ChangeNotifier {
   String? get message => _message;
   bool get isAuthenticated => _status == AuthStatus.authenticated;
 
-  AuthProvider() {
-    _checkExistingSession();
-  }
-
-  Future<void> _checkExistingSession() async {
-    await storageService.init();
-    
-    final token = storageService.getAuthToken();
-    final savedDriver = storageService.getDriver();
-    
-    if (token != null && savedDriver != null) {
-      apiService.setAuthToken(token);
-      _driver = savedDriver;
+  /// Constructor accepts pre-loaded session data so the splash screen can
+  /// route deterministically without waiting on async storage reads.
+  AuthProvider({Driver? initialDriver, String? initialToken}) {
+    if (initialDriver != null && initialToken != null) {
+      _driver = initialDriver;
+      _phoneNumber = initialDriver.phone;
+      apiService.setAuthToken(initialToken);
       _status = AuthStatus.authenticated;
     } else {
       _status = AuthStatus.unauthenticated;
     }
-    
-    notifyListeners();
   }
 
   Future<void> sendOtp(String phone) async {
@@ -59,11 +51,12 @@ class AuthProvider with ChangeNotifier {
       final response = await apiService.sendOtp(phone);
       _message = response['message'];
       _status = AuthStatus.otpSent;
+      await storageService.saveLastPhone(phone);
     } catch (e) {
       _error = e.toString();
       _status = AuthStatus.error;
     }
-    
+
     notifyListeners();
   }
 
@@ -86,7 +79,7 @@ class AuthProvider with ChangeNotifier {
       _error = e.toString();
       _status = AuthStatus.error;
     }
-    
+
     notifyListeners();
   }
 
@@ -99,28 +92,29 @@ class AuthProvider with ChangeNotifier {
     try {
       final response = await apiService.loginWithPassword(phone, password);
       await _handleAuthSuccess(response);
+      await storageService.saveLastPhone(phone);
     } catch (e) {
       _error = e.toString();
       _status = AuthStatus.error;
     }
-    
+
     notifyListeners();
   }
 
   Future<void> _handleAuthSuccess(Map<String, dynamic> response) async {
     final token = response['token'];
     final userData = response['user'] ?? response['driver'];
-    
+
     if (token != null) {
       await storageService.saveAuthToken(token);
       apiService.setAuthToken(token);
     }
-    
+
     if (userData != null) {
       _driver = Driver.fromJson(userData);
       await storageService.saveDriver(_driver!);
     }
-    
+
     _status = AuthStatus.authenticated;
   }
 
@@ -134,6 +128,8 @@ class AuthProvider with ChangeNotifier {
     }
   }
 
+  /// Logout the driver but KEEP the selected tenant. The user is taken back
+  /// to the login screen for the same hotel; they can change hotel from there.
   Future<void> logout() async {
     try {
       await firebaseService.dispose();
@@ -142,14 +138,13 @@ class AuthProvider with ChangeNotifier {
       // Ignore logout errors
     } finally {
       _driver = null;
-      _phoneNumber = null;
       _error = null;
       _message = null;
       _status = AuthStatus.unauthenticated;
-      
-      await storageService.clearDriver();
-      await storageService.clearAuthToken();
-      
+
+      apiService.clearAuth();
+      await storageService.clearAuth();
+
       notifyListeners();
     }
   }

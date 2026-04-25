@@ -15,15 +15,23 @@ enum TrackingStatus {
   error,
 }
 
+/// Update cadence — sits inside the user-requested "every 3-5 seconds" window.
+const int kLocationIntervalMs = 4000;
+
 class LocationProvider with ChangeNotifier {
   TrackingStatus _status = TrackingStatus.idle;
   LocationData? _currentLocation;
   LocationPermissionStatus? _permissionStatus;
   String? _error;
   bool _isOnline = false;
-  
+
+  // Session stats
+  DateTime? _sessionStart;
+  int _updateCount = 0;
+  double _totalDistanceMeters = 0;
+
   StreamSubscription<LocationData>? _locationSubscription;
-  Timer? _lastUpdateTimer;
+  Timer? _uiRefreshTimer;
   DateTime? _lastUpdateTime;
 
   TrackingStatus get status => _status;
@@ -32,29 +40,58 @@ class LocationProvider with ChangeNotifier {
   String? get error => _error;
   bool get isOnline => _isOnline;
   bool get isTracking => _status == TrackingStatus.tracking;
-  
+  int get updateCount => _updateCount;
+  double get totalDistanceMeters => _totalDistanceMeters;
+  Duration get sessionDuration =>
+      _sessionStart == null ? Duration.zero : DateTime.now().difference(_sessionStart!);
+
   String get lastUpdateText {
     if (_lastUpdateTime == null) return 'Never';
     final diff = DateTime.now().difference(_lastUpdateTime!);
-    if (diff.inSeconds < 10) return 'Just now';
+    if (diff.inSeconds < 5) return 'Just now';
     if (diff.inSeconds < 60) return '${diff.inSeconds}s ago';
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
     return '${diff.inHours}h ago';
+  }
+
+  String get sessionDurationText {
+    final d = sessionDuration;
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    final s = d.inSeconds.remainder(60);
+    if (h > 0) {
+      return '${h}h ${m.toString().padLeft(2, '0')}m';
+    }
+    return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+  }
+
+  String get totalDistanceText {
+    if (_totalDistanceMeters < 1000) {
+      return '${_totalDistanceMeters.toStringAsFixed(0)} m';
+    }
+    return '${(_totalDistanceMeters / 1000).toStringAsFixed(2)} km';
   }
 
   Future<void> initialize({
     required Tenant tenant,
     required Driver driver,
   }) async {
-    // Initialize Firebase with driver info
-    firebaseService.initialize(
-      tenantId: tenant.id,
-      driver: driver,
-    );
+    // Reset transient session state so a previous driver's stats don't leak
+    // into a new session.
+    if (!isTracking) {
+      _currentLocation = null;
+      _lastUpdateTime = null;
+      _updateCount = 0;
+      _totalDistanceMeters = 0;
+      _sessionStart = null;
+      _error = null;
+    }
 
-    // Check if tracking was enabled before
+    firebaseService.initialize(tenantId: tenant.id, driver: driver);
+
+    // Auto-resume if the driver had tracking enabled before app was killed.
     final wasTracking = storageService.isTrackingEnabled();
-    if (wasTracking) {
+    if (wasTracking && !isTracking) {
       await startTracking();
     }
   }
@@ -70,9 +107,7 @@ class LocationProvider with ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    // Check permissions first
     _permissionStatus = await locationService.checkPermissions();
-    
     if (_permissionStatus != LocationPermissionStatus.granted) {
       _status = TrackingStatus.error;
       _error = _getPermissionErrorMessage(_permissionStatus!);
@@ -80,18 +115,23 @@ class LocationProvider with ChangeNotifier {
       return false;
     }
 
-    // Get initial location
+    // Reset session stats
+    _sessionStart = DateTime.now();
+    _updateCount = 0;
+    _totalDistanceMeters = 0;
+
+    // Initial fix
     final initialLocation = await locationService.getCurrentPosition();
     if (initialLocation != null) {
       _currentLocation = initialLocation;
       _lastUpdateTime = DateTime.now();
+      _updateCount = 1;
       await _sendLocationToFirebase(initialLocation);
     }
 
-    // Start continuous tracking
     final started = await locationService.startTracking(
-      distanceFilter: 10,
-      intervalMs: 5000,
+      distanceFilter: 0,
+      intervalMs: kLocationIntervalMs,
     );
 
     if (!started) {
@@ -101,11 +141,19 @@ class LocationProvider with ChangeNotifier {
       return false;
     }
 
-    // Listen to location updates
     _locationSubscription = locationService.locationStream.listen(
       (location) {
+        if (_currentLocation != null) {
+          _totalDistanceMeters += locationService.calculateDistance(
+            _currentLocation!.latitude,
+            _currentLocation!.longitude,
+            location.latitude,
+            location.longitude,
+          );
+        }
         _currentLocation = location;
         _lastUpdateTime = DateTime.now();
+        _updateCount++;
         _sendLocationToFirebase(location);
         notifyListeners();
       },
@@ -115,16 +163,15 @@ class LocationProvider with ChangeNotifier {
       },
     );
 
-    // Set online status
     _isOnline = true;
     await firebaseService.setOnlineStatus(true);
 
     _status = TrackingStatus.tracking;
     await storageService.setTrackingEnabled(true);
-    
-    // Start timer to update "last updated" text
-    _lastUpdateTimer = Timer.periodic(
-      const Duration(seconds: 10),
+
+    // Tick for "last update" / duration UI fields
+    _uiRefreshTimer = Timer.periodic(
+      const Duration(seconds: 1),
       (_) => notifyListeners(),
     );
 
@@ -135,44 +182,27 @@ class LocationProvider with ChangeNotifier {
   Future<void> stopTracking() async {
     await _locationSubscription?.cancel();
     _locationSubscription = null;
-    
-    _lastUpdateTimer?.cancel();
-    _lastUpdateTimer = null;
+
+    _uiRefreshTimer?.cancel();
+    _uiRefreshTimer = null;
 
     await locationService.stopTracking();
 
-    // Set offline status
     _isOnline = false;
     await firebaseService.setOnlineStatus(false);
 
     _status = TrackingStatus.idle;
+    _sessionStart = null;
     await storageService.setTrackingEnabled(false);
-    
+
     notifyListeners();
-  }
-
-  Future<void> pauseTracking() async {
-    if (_status != TrackingStatus.tracking) return;
-
-    await _locationSubscription?.cancel();
-    _locationSubscription = null;
-    
-    await locationService.stopTracking();
-    
-    _status = TrackingStatus.paused;
-    notifyListeners();
-  }
-
-  Future<void> resumeTracking() async {
-    if (_status != TrackingStatus.paused) return;
-    await startTracking();
   }
 
   Future<void> _sendLocationToFirebase(LocationData location) async {
     try {
       await firebaseService.updateLocation(location);
-    } catch (e) {
-      print('Error sending location to Firebase: $e');
+    } catch (_) {
+      // Network errors are expected occasionally — keep the session alive.
     }
   }
 
@@ -181,9 +211,9 @@ class LocationProvider with ChangeNotifier {
       case LocationPermissionStatus.denied:
         return 'Location permission denied. Please allow location access.';
       case LocationPermissionStatus.deniedForever:
-        return 'Location permission permanently denied. Please enable in Settings.';
+        return 'Location permission permanently denied. Please enable it in Settings.';
       case LocationPermissionStatus.serviceDisabled:
-        return 'Location services are disabled. Please enable GPS.';
+        return 'Location services are disabled. Please turn on GPS.';
       default:
         return 'Unknown permission error';
     }
@@ -193,7 +223,7 @@ class LocationProvider with ChangeNotifier {
     if (_permissionStatus == LocationPermissionStatus.serviceDisabled) {
       await locationService.openLocationSettings();
     } else {
-      await locationService.openAppSettings();
+      await locationService.openAppPermissionSettings();
     }
   }
 
@@ -205,7 +235,7 @@ class LocationProvider with ChangeNotifier {
   @override
   void dispose() {
     _locationSubscription?.cancel();
-    _lastUpdateTimer?.cancel();
+    _uiRefreshTimer?.cancel();
     locationService.dispose();
     super.dispose();
   }

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../providers/tenant_provider.dart';
 import '../providers/auth_provider.dart';
 import '../config/theme.dart';
+import '../services/storage_service.dart';
 import 'tenant_selection_screen.dart';
 import 'dashboard_screen.dart';
 
@@ -18,9 +19,20 @@ class _LoginScreenState extends State<LoginScreen> {
   final _phoneController = TextEditingController();
   final _otpController = TextEditingController();
   final _passwordController = TextEditingController();
-  
+
   bool _usePassword = false;
   bool _showPassword = false;
+  bool _navigated = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-fill the phone number from the last successful login.
+    final last = storageService.getLastPhone();
+    if (last != null && last.isNotEmpty) {
+      _phoneController.text = last;
+    }
+  }
 
   @override
   void dispose() {
@@ -36,6 +48,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _showError('Please enter your phone number');
       return;
     }
+    FocusScope.of(context).unfocus();
     context.read<AuthProvider>().sendOtp(phone);
   }
 
@@ -45,13 +58,13 @@ class _LoginScreenState extends State<LoginScreen> {
       _showError('Please enter the OTP');
       return;
     }
+    FocusScope.of(context).unfocus();
     context.read<AuthProvider>().verifyOtp(otp);
   }
 
   void _loginWithPassword() {
     final phone = _phoneController.text.trim();
     final password = _passwordController.text;
-    
     if (phone.isEmpty) {
       _showError('Please enter your phone number');
       return;
@@ -60,7 +73,7 @@ class _LoginScreenState extends State<LoginScreen> {
       _showError('Please enter your password');
       return;
     }
-    
+    FocusScope.of(context).unfocus();
     context.read<AuthProvider>().loginWithPassword(phone, password);
   }
 
@@ -70,6 +83,9 @@ class _LoginScreenState extends State<LoginScreen> {
         content: Text(message),
         backgroundColor: AppColors.error,
         behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
       ),
     );
   }
@@ -90,8 +106,9 @@ class _LoginScreenState extends State<LoginScreen> {
       body: SafeArea(
         child: Consumer<AuthProvider>(
           builder: (context, authProvider, _) {
-            // Navigate to dashboard on successful auth
-            if (authProvider.isAuthenticated) {
+            // Auto-navigate when authentication succeeds.
+            if (authProvider.isAuthenticated && !_navigated) {
+              _navigated = true;
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 Navigator.of(context).pushReplacement(
                   MaterialPageRoute(builder: (_) => const DashboardScreen()),
@@ -99,225 +116,151 @@ class _LoginScreenState extends State<LoginScreen> {
               });
             }
 
+            final loading = authProvider.status == AuthStatus.sendingOtp ||
+                authProvider.status == AuthStatus.verifying;
+            final inOtpStep = authProvider.status == AuthStatus.otpSent;
+
             return SingleChildScrollView(
-              padding: const EdgeInsets.all(24.0),
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 32),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Back button to change tenant
-                  TextButton.icon(
-                    onPressed: _changeTenant,
-                    icon: const Icon(Icons.arrow_back, size: 18),
-                    label: const Text('Change Hotel'),
-                    style: TextButton.styleFrom(
-                      foregroundColor: AppColors.textSecondary,
-                      padding: EdgeInsets.zero,
-                    ),
+                  // Top bar — change hotel
+                  _ChangeHotelChip(
+                    tenantName: tenant?.name ?? 'Hotel',
+                    onTap: _changeTenant,
                   ),
-                  const SizedBox(height: 20),
-                  
-                  // Header
-                  Center(
-                    child: Container(
-                      width: 64,
-                      height: 64,
-                      decoration: BoxDecoration(
-                        color: AppColors.primary,
-                        borderRadius: BorderRadius.circular(16),
+                  const SizedBox(height: 32),
+
+                  // Branding
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [AppColors.primary, AppColors.primaryDark],
                       ),
-                      child: const Icon(
-                        Icons.local_shipping_rounded,
-                        size: 32,
-                        color: Colors.white,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  
-                  Center(
-                    child: Text(
-                      tenant?.name ?? 'Driver Login',
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.textPrimary,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  
-                  const Center(
-                    child: Text(
-                      'Sign in to start tracking',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 40),
-                  
-                  // Error message
-                  if (authProvider.error != null) ...[
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: AppColors.error.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: AppColors.error.withOpacity(0.3),
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          const Icon(
-                            Icons.error_outline,
-                            color: AppColors.error,
-                            size: 20,
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              authProvider.error!,
-                              style: const TextStyle(
-                                color: AppColors.error,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  
-                  // Phone input
-                  const Text(
-                    'Phone Number',
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.textSecondary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: _phoneController,
-                    keyboardType: TextInputType.phone,
-                    enabled: authProvider.status != AuthStatus.otpSent,
-                    style: const TextStyle(color: AppColors.textPrimary),
-                    inputFormatters: [
-                      FilteringTextInputFormatter.allow(RegExp(r'[0-9+]')),
-                    ],
-                    decoration: const InputDecoration(
-                      hintText: '+212 600 000 000',
-                      prefixIcon: Icon(Icons.phone, color: AppColors.textMuted),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  
-                  // Toggle between OTP and Password
-                  if (authProvider.status != AuthStatus.otpSent) ...[
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildToggleButton(
-                            'OTP Login',
-                            !_usePassword,
-                            () => setState(() => _usePassword = false),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildToggleButton(
-                            'Password',
-                            _usePassword,
-                            () => setState(() => _usePassword = true),
-                          ),
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.primary.withOpacity(0.25),
+                          blurRadius: 16,
+                          offset: const Offset(0, 6),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 24),
+                    child: const Icon(
+                      Icons.local_shipping_rounded,
+                      size: 28,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  Text(
+                    'Welcome back',
+                    style: Theme.of(context).textTheme.headlineLarge,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Sign in to start tracking for ${tenant?.name ?? 'your hotel'}.',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                  const SizedBox(height: 28),
+
+                  // Errors
+                  if (authProvider.error != null) ...[
+                    _Banner(
+                      icon: Icons.error_outline_rounded,
+                      color: AppColors.error,
+                      message: authProvider.error!,
+                    ),
+                    const SizedBox(height: 14),
                   ],
-                  
-                  // OTP Flow
-                  if (!_usePassword && authProvider.status == AuthStatus.otpSent) ...[
-                    if (authProvider.message != null) ...[
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: AppColors.success.withOpacity(0.1),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.check_circle_outline,
-                              color: AppColors.success,
-                              size: 20,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                authProvider.message!,
-                                style: const TextStyle(
-                                  color: AppColors.success,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
+
+                  // Mode toggle (hidden in OTP step)
+                  if (!inOtpStep) ...[
+                    _SegmentedToggle(
+                      left: 'OTP',
+                      right: 'Password',
+                      selectedIndex: _usePassword ? 1 : 0,
+                      onChanged: (i) =>
+                          setState(() => _usePassword = i == 1),
+                    ),
+                    const SizedBox(height: 22),
+                  ],
+
+                  // Phone field
+                  const _FieldLabel('Phone number'),
+                  TextField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    enabled: !inOtpStep,
+                    style: const TextStyle(color: AppColors.textPrimary),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.allow(RegExp(r'[0-9+\s]')),
                     ],
-                    
-                    const Text(
-                      'Enter OTP',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: AppColors.textSecondary,
+                    decoration: const InputDecoration(
+                      hintText: '+212 600 000 000',
+                      prefixIcon: Icon(
+                        Icons.phone_rounded,
+                        color: AppColors.textMuted,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                  ),
+                  const SizedBox(height: 18),
+
+                  // OTP step
+                  if (inOtpStep) ...[
+                    if (authProvider.message != null) ...[
+                      _Banner(
+                        icon: Icons.check_circle_outline_rounded,
+                        color: AppColors.success,
+                        message: authProvider.message!,
+                      ),
+                      const SizedBox(height: 14),
+                    ],
+                    const _FieldLabel('Verification code'),
                     TextField(
                       controller: _otpController,
                       keyboardType: TextInputType.number,
                       style: const TextStyle(
                         color: AppColors.textPrimary,
-                        fontSize: 24,
-                        letterSpacing: 8,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 10,
                       ),
                       textAlign: TextAlign.center,
+                      autofocus: true,
                       inputFormatters: [
                         FilteringTextInputFormatter.digitsOnly,
                         LengthLimitingTextInputFormatter(6),
                       ],
                       decoration: const InputDecoration(
                         hintText: '------',
-                        hintStyle: TextStyle(letterSpacing: 8),
+                        hintStyle: TextStyle(
+                          letterSpacing: 10,
+                          fontSize: 22,
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    
-                    TextButton(
-                      onPressed: () => authProvider.resetToPhone(),
-                      child: const Text('Change phone number'),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () =>
+                            context.read<AuthProvider>().resetToPhone(),
+                        icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                        label: const Text('Use a different phone number'),
+                      ),
                     ),
                   ],
-                  
-                  // Password input
-                  if (_usePassword && authProvider.status != AuthStatus.otpSent) ...[
-                    const Text(
-                      'Password',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: AppColors.textSecondary,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
+
+                  // Password step
+                  if (_usePassword && !inOtpStep) ...[
+                    const _FieldLabel('Password'),
                     TextField(
                       controller: _passwordController,
                       obscureText: !_showPassword,
@@ -325,33 +268,33 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: InputDecoration(
                         hintText: 'Enter your password',
                         prefixIcon: const Icon(
-                          Icons.lock,
+                          Icons.lock_outline_rounded,
                           color: AppColors.textMuted,
                         ),
                         suffixIcon: IconButton(
                           icon: Icon(
-                            _showPassword 
-                                ? Icons.visibility_off 
-                                : Icons.visibility,
+                            _showPassword
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
                             color: AppColors.textMuted,
+                            size: 20,
                           ),
-                          onPressed: () {
-                            setState(() => _showPassword = !_showPassword);
-                          },
+                          onPressed: () =>
+                              setState(() => _showPassword = !_showPassword),
                         ),
                       ),
                     ),
                   ],
-                  const SizedBox(height: 32),
-                  
+
+                  const SizedBox(height: 28),
+
                   // Action button
                   SizedBox(
                     width: double.infinity,
+                    height: 54,
                     child: ElevatedButton(
-                      onPressed: _isLoading(authProvider) 
-                          ? null 
-                          : () => _handleSubmit(authProvider),
-                      child: _isLoading(authProvider)
+                      onPressed: loading ? null : () => _handleSubmit(authProvider),
+                      child: loading
                           ? const SizedBox(
                               width: 20,
                               height: 20,
@@ -372,49 +315,10 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _buildToggleButton(String text, bool isActive, VoidCallback onTap) {
-    return Material(
-      color: isActive ? AppColors.primary : AppColors.surface,
-      borderRadius: BorderRadius.circular(8),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: isActive ? AppColors.primary : AppColors.border,
-            ),
-          ),
-          child: Center(
-            child: Text(
-              text,
-              style: TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: isActive ? Colors.white : AppColors.textSecondary,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  bool _isLoading(AuthProvider provider) {
-    return provider.status == AuthStatus.sendingOtp ||
-           provider.status == AuthStatus.verifying;
-  }
-
   String _getButtonText(AuthProvider provider) {
-    if (provider.status == AuthStatus.otpSent) {
-      return 'Verify OTP';
-    }
-    if (_usePassword) {
-      return 'Sign In';
-    }
-    return 'Send OTP';
+    if (provider.status == AuthStatus.otpSent) return 'Verify code';
+    if (_usePassword) return 'Sign in';
+    return 'Send code';
   }
 
   void _handleSubmit(AuthProvider provider) {
@@ -425,5 +329,174 @@ class _LoginScreenState extends State<LoginScreen> {
     } else {
       _sendOtp();
     }
+  }
+}
+
+class _ChangeHotelChip extends StatelessWidget {
+  final String tenantName;
+  final VoidCallback onTap;
+  const _ChangeHotelChip({required this.tenantName, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppColors.surface,
+      borderRadius: BorderRadius.circular(999),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(999),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: AppColors.border),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.business_rounded,
+                size: 14,
+                color: AppColors.textMuted,
+              ),
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 180),
+                child: Text(
+                  tenantName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Icon(
+                Icons.swap_horiz_rounded,
+                size: 14,
+                color: AppColors.primaryLight,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FieldLabel extends StatelessWidget {
+  final String text;
+  const _FieldLabel(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        text,
+        style: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: AppColors.textSecondary,
+          letterSpacing: 0.4,
+        ),
+      ),
+    );
+  }
+}
+
+class _Banner extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String message;
+
+  const _Banner({
+    required this.icon,
+    required this.color,
+    required this.message,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withOpacity(0.30)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              message,
+              style: TextStyle(color: color, fontSize: 13, height: 1.4),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SegmentedToggle extends StatelessWidget {
+  final String left;
+  final String right;
+  final int selectedIndex;
+  final ValueChanged<int> onChanged;
+
+  const _SegmentedToggle({
+    required this.left,
+    required this.right,
+    required this.selectedIndex,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(child: _segment(left, 0)),
+          Expanded(child: _segment(right, 1)),
+        ],
+      ),
+    );
+  }
+
+  Widget _segment(String label, int index) {
+    final isActive = selectedIndex == index;
+    return GestureDetector(
+      onTap: () => onChanged(index),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        decoration: BoxDecoration(
+          color: isActive ? AppColors.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: isActive ? Colors.white : AppColors.textSecondary,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

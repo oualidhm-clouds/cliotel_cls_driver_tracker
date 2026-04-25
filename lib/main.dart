@@ -5,47 +5,87 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'config/theme.dart';
 import 'config/firebase_options.dart';
+import 'models/driver.dart';
+import 'models/tenant.dart';
 import 'providers/auth_provider.dart';
 import 'providers/location_provider.dart';
 import 'providers/tenant_provider.dart';
 import 'screens/splash_screen.dart';
+import 'services/api_service.dart';
+import 'services/storage_service.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize Firebase
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
-  );
-  
-  // Set preferred orientations
+
+  // Lock orientation early
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
-  
-  // Set system UI overlay style
+
+  // Edge-to-edge dark system chrome
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: Colors.transparent,
       statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: Color(0xFF0a0a0a),
+      statusBarBrightness: Brightness.dark,
+      systemNavigationBarColor: AppColors.background,
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );
-  
-  runApp(const CliotelDriverApp());
+
+  // Init Firebase
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  // Init local storage and PRELOAD persisted state synchronously so the
+  // splash screen can route deterministically (no flicker, no race).
+  await storageService.init();
+
+  final savedTenant = storageService.getTenant();
+  final savedDriver = storageService.getDriver();
+  final savedToken = storageService.getAuthToken();
+
+  if (savedTenant?.baseUrl != null) {
+    apiService.setTenant(savedTenant!.baseUrl!);
+  }
+  if (savedToken != null) {
+    apiService.setAuthToken(savedToken);
+  }
+
+  runApp(CliotelDriverApp(
+    initialTenant: savedTenant,
+    initialDriver: savedDriver,
+    initialToken: savedToken,
+  ));
 }
 
 class CliotelDriverApp extends StatelessWidget {
-  const CliotelDriverApp({super.key});
+  final Tenant? initialTenant;
+  final Driver? initialDriver;
+  final String? initialToken;
+
+  const CliotelDriverApp({
+    super.key,
+    this.initialTenant,
+    this.initialDriver,
+    this.initialToken,
+  });
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => TenantProvider()),
-        ChangeNotifierProvider(create: (_) => AuthProvider()),
+        ChangeNotifierProvider(
+          create: (_) => TenantProvider(initialTenant: initialTenant),
+        ),
+        ChangeNotifierProvider(
+          create: (_) => AuthProvider(
+            initialDriver: initialDriver,
+            initialToken: initialToken,
+          ),
+        ),
         ChangeNotifierProvider(create: (_) => LocationProvider()),
       ],
       child: MaterialApp(

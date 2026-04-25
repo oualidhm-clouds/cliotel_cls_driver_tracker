@@ -22,17 +22,12 @@ class TenantProvider with ChangeNotifier {
   String? get error => _error;
   bool get hasTenant => _selectedTenant != null;
 
-  TenantProvider() {
-    _loadSavedTenant();
-  }
-
-  Future<void> _loadSavedTenant() async {
-    await storageService.init();
-    final savedTenant = storageService.getTenant();
-    if (savedTenant != null) {
-      _selectedTenant = savedTenant;
-      apiService.setTenant(savedTenant.baseUrl!);
-      notifyListeners();
+  TenantProvider({Tenant? initialTenant}) {
+    if (initialTenant != null) {
+      _selectedTenant = initialTenant;
+      if (initialTenant.baseUrl != null) {
+        apiService.setTenant(initialTenant.baseUrl!);
+      }
     }
   }
 
@@ -48,18 +43,18 @@ class TenantProvider with ChangeNotifier {
       _error = e.toString();
       _status = TenantStatus.error;
     }
-    
+
     notifyListeners();
   }
 
   Future<void> selectTenant(Tenant tenant) async {
     _selectedTenant = tenant;
-    
+
     if (tenant.baseUrl != null) {
       apiService.setTenant(tenant.baseUrl!);
       await storageService.saveTenant(tenant);
     }
-    
+
     notifyListeners();
   }
 
