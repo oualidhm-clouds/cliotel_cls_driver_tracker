@@ -1,7 +1,11 @@
 import 'dart:async';
+
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart' as geo;
 import 'package:permission_handler/permission_handler.dart';
+
 import '../models/location_data.dart';
+import 'background_task_handler.dart';
 
 enum LocationPermissionStatus {
   granted,
@@ -10,12 +14,84 @@ enum LocationPermissionStatus {
   serviceDisabled,
 }
 
+/// Public surface used by the UI / providers.
+///
+/// Behind the scenes we delegate the actual location stream + Firebase writes
+/// to a [flutter_foreground_task] background isolate. That isolate keeps
+/// running (with a persistent notification) even after the user swipes the
+/// app away from recents — which the previous geolocator-only setup could
+/// not survive.
 class LocationService {
-  StreamSubscription<geo.Position>? _positionSubscription;
+  static const _serviceId = 256;
+
   final StreamController<LocationData> _locationController =
       StreamController<LocationData>.broadcast();
 
+  bool _wired = false;
+
   Stream<LocationData> get locationStream => _locationController.stream;
+
+  // ---------------------------------------------------------------------------
+  // One-time setup
+  // ---------------------------------------------------------------------------
+
+  /// Configure the foreground task. Must be called once early in `main`.
+  Future<void> configure() async {
+    FlutterForegroundTask.init(
+      androidNotificationOptions: AndroidNotificationOptions(
+        channelId: 'cliotel_driver_location',
+        channelName: 'Driver location tracking',
+        channelDescription:
+            'Persistent notification shown while your live location is being '
+            'shared with the dispatcher.',
+        channelImportance: NotificationChannelImportance.LOW,
+        priority: NotificationPriority.LOW,
+        showBadge: false,
+        onlyAlertOnce: true,
+      ),
+      iosNotificationOptions: const IOSNotificationOptions(
+        showNotification: true,
+        playSound: false,
+      ),
+      foregroundTaskOptions: ForegroundTaskOptions(
+        eventAction: ForegroundTaskEventAction.nothing(),
+        autoRunOnBoot: false,
+        autoRunOnMyPackageReplaced: true,
+        allowWakeLock: true,
+        allowWifiLock: true,
+      ),
+    );
+  }
+
+  /// Wire the data callback that receives location pings from the background
+  /// isolate. Idempotent — safe to call from `LocationProvider.initialize`.
+  void attachDataPort() {
+    if (_wired) return;
+    _wired = true;
+    FlutterForegroundTask.addTaskDataCallback(_onTaskData);
+  }
+
+  void _onTaskData(Object data) {
+    if (data is! Map) return;
+    if (data['type'] != 'location') return;
+
+    final loc = LocationData(
+      latitude: (data['lat'] as num).toDouble(),
+      longitude: (data['lng'] as num).toDouble(),
+      accuracy: (data['accuracy'] as num?)?.toDouble(),
+      speed: (data['speed'] as num?)?.toDouble(),
+      heading: (data['heading'] as num?)?.toDouble(),
+      altitude: (data['altitude'] as num?)?.toDouble(),
+      timestamp: data['timestamp'] is int
+          ? DateTime.fromMillisecondsSinceEpoch(data['timestamp'] as int)
+          : DateTime.now(),
+    );
+    _locationController.add(loc);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Permissions
+  // ---------------------------------------------------------------------------
 
   /// Check the in-use location permission and that GPS is enabled.
   Future<LocationPermissionStatus> checkPermissions() async {
@@ -44,14 +120,34 @@ class LocationService {
     return LocationPermissionStatus.denied;
   }
 
-  /// Request "Allow all the time" — required for tracking when the screen is
-  /// off / app is in the background. Best effort: returns false if not granted.
+  /// Request "Allow all the time" so the OS lets us keep streaming with the
+  /// screen off. Best effort — returns false if the user denies.
   Future<bool> requestBackgroundPermission() async {
     final status = await Permission.locationAlways.request();
     return status.isGranted;
   }
 
-  /// One-shot location read.
+  /// Android 13+: notification channel needs runtime permission to be visible.
+  Future<bool> requestNotificationPermission() async {
+    final res = await FlutterForegroundTask.requestNotificationPermission();
+    return res == NotificationPermission.granted;
+  }
+
+  /// Ask the user to exempt the app from battery optimization. Without this,
+  /// some OEM skins (Xiaomi, OPPO, Samsung) will still kill the service after
+  /// a few minutes even with a foreground notification.
+  Future<void> requestIgnoreBatteryOptimization() async {
+    final canIgnore =
+        await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    if (!canIgnore) {
+      await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // One-shot fix (used for the initial UI display before the service starts)
+  // ---------------------------------------------------------------------------
+
   Future<LocationData?> getCurrentPosition() async {
     try {
       final permissionStatus = await checkPermissions();
@@ -63,60 +159,63 @@ class LocationService {
       );
 
       return _toLocationData(position);
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
 
-  /// Start a continuous, foreground-service-backed stream of location
-  /// updates. Defaults to a ~4 second cadence with no distance filter so we
-  /// keep emitting even when the driver is stationary.
-  Future<bool> startTracking({
-    int distanceFilter = 0,
-    int intervalMs = 4000,
-  }) async {
+  // ---------------------------------------------------------------------------
+  // Service control
+  // ---------------------------------------------------------------------------
+
+  Future<bool> isRunning() async {
+    return FlutterForegroundTask.isRunningService;
+  }
+
+  /// Start the foreground service. The background isolate takes it from here.
+  Future<bool> startTracking() async {
     final permissionStatus = await checkPermissions();
     if (permissionStatus != LocationPermissionStatus.granted) return false;
 
-    // Best-effort upgrade to background permission so updates keep flowing
-    // when the screen is off. We don't fail tracking if this is denied —
-    // the foreground service notification still keeps the app alive.
+    // Best-effort upgrade to "always" so updates keep flowing with screen off.
     await requestBackgroundPermission();
 
-    await stopTracking();
+    // On Android 13+ the notification needs runtime permission or it won't be
+    // visible — without a visible notification the foreground service rule
+    // is violated and Android will kill us.
+    await requestNotificationPermission();
 
-    final locationSettings = geo.AndroidSettings(
-      accuracy: geo.LocationAccuracy.high,
-      distanceFilter: distanceFilter,
-      intervalDuration: Duration(milliseconds: intervalMs),
-      forceLocationManager: false,
-      foregroundNotificationConfig: const geo.ForegroundNotificationConfig(
-        notificationText:
-            'Sharing your live location with Cliotel — tap to open the app.',
-        notificationTitle: 'Cliotel Driver — Tracking active',
-        enableWakeLock: true,
-        setOngoing: true,
-        notificationIcon: geo.AndroidResource(
-          name: 'ic_launcher',
-          defType: 'mipmap',
-        ),
-      ),
+    // Encourage the user to opt out of battery optimization. Non-fatal.
+    await requestIgnoreBatteryOptimization();
+
+    attachDataPort();
+
+    if (await FlutterForegroundTask.isRunningService) {
+      return true;
+    }
+
+    final result = await FlutterForegroundTask.startService(
+      serviceId: _serviceId,
+      notificationTitle: 'Cliotel Driver — Tracking active',
+      notificationText: 'Sharing your live location with the dispatcher.',
+      notificationButtons: const [
+        NotificationButton(id: 'stop', text: 'Stop'),
+      ],
+      callback: startLocationServiceCallback,
     );
 
-    _positionSubscription = geo.Geolocator.getPositionStream(
-      locationSettings: locationSettings,
-    ).listen(
-      (position) => _locationController.add(_toLocationData(position)),
-      onError: (_) {},
-    );
-
-    return true;
+    return result is ServiceRequestSuccess;
   }
 
   Future<void> stopTracking() async {
-    await _positionSubscription?.cancel();
-    _positionSubscription = null;
+    if (await FlutterForegroundTask.isRunningService) {
+      await FlutterForegroundTask.stopService();
+    }
   }
+
+  // ---------------------------------------------------------------------------
+  // Misc
+  // ---------------------------------------------------------------------------
 
   double calculateDistance(
     double startLat,
@@ -136,7 +235,10 @@ class LocationService {
   }
 
   void dispose() {
-    stopTracking();
+    if (_wired) {
+      FlutterForegroundTask.removeTaskDataCallback(_onTaskData);
+      _wired = false;
+    }
     _locationController.close();
   }
 

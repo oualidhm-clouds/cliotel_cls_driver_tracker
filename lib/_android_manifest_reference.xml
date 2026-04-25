@@ -1,0 +1,116 @@
+<!--
+  REFERENCE ONLY — copy the contents into your real manifest at:
+    android/app/src/main/AndroidManifest.xml
+
+  This is what makes background tracking + notification actually work on
+  modern Android (incl. Android 13+ POST_NOTIFICATIONS, Android 14+ FGS
+  type rules, and OEM swipe-kill survival).
+
+  Why the previous manifest was failing:
+    * No POST_NOTIFICATIONS permission → on Android 13+ the foreground
+      notification was suppressed, so Android killed the foreground service
+      after a few seconds for "missing notification".
+    * No `android:stopWithTask="false"` on the service → swiping the app
+      from recents tore down the service.
+    * No RestartReceiver → after swipe-kill there was nothing to bring the
+      service back.
+    * No REQUEST_IGNORE_BATTERY_OPTIMIZATIONS → OEM skins (Xiaomi, OPPO,
+      Samsung, Vivo, Huawei) freeze the service after a few minutes.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Location -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+
+    <!-- Foreground service (Android 9+) and the location-typed FGS (Android 14+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+
+    <!-- Android 13+ runtime permission for showing the persistent notification -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Lets us show the "ignore battery optimization" prompt -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- Networking + wake lock -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Auto-restart the service after a device reboot (optional but recommended) -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application
+        android:label="Cliotel Driver"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Foreground service for location tracking.
+            android:stopWithTask="false" is the magic that lets it survive
+            the user swiping the app from recents.
+        -->
+        <service
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="location"
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- Brings the service back if Android kills it (low memory, etc.) -->
+        <receiver
+            android:name="com.pravera.flutter_foreground_task.service.RestartReceiver"
+            android:exported="false" />
+
+        <!-- Restart the service after a device reboot. Optional — uncomment if you want this. -->
+        <!--
+        <receiver
+            android:name="com.pravera.flutter_foreground_task.service.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+        -->
+
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <!-- Needed so Geolocator can open settings -->
+        <intent>
+            <action android:name="android.settings.LOCATION_SOURCE_SETTINGS" />
+        </intent>
+    </queries>
+</manifest>

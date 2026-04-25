@@ -23,6 +23,9 @@ dependencies:
   # Location
   geolocator: ^10.1.0
   permission_handler: ^11.1.0
+
+  # Background foreground service (survives swipe-kill, runs its own isolate)
+  flutter_foreground_task: ^8.10.0
   
   # Local Storage
   shared_preferences: ^2.2.2

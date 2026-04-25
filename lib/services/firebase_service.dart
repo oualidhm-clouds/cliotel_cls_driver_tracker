@@ -33,27 +33,18 @@ class FirebaseService {
         .child('drivers')
         .child(driver.id.toString());
     
-    // Monitor connection state
+    // Monitor connection state. Note: we intentionally DO NOT register an
+    // onDisconnect handler from the UI isolate any more — when the user
+    // swipe-kills the app, the UI isolate dies and that handler would mark
+    // the driver offline even though the foreground-service background
+    // isolate is still streaming locations. Presence is now owned by the
+    // background isolate (see lib/services/background_task_handler.dart).
     _connectionSubscription = _database
         .ref('.info/connected')
         .onValue
         .listen((event) {
           _isConnected = event.snapshot.value == true;
-          if (_isConnected) {
-            _setupPresence();
-          }
         });
-  }
-
-  /// Setup presence system for online/offline detection
-  void _setupPresence() {
-    if (_driverLocationRef == null) return;
-
-    // When this client disconnects, update the driver status
-    _driverLocationRef!.onDisconnect().update({
-      'is_online': false,
-      'disconnected_at': ServerValue.timestamp,
-    });
   }
 
   /// Update driver's location in Firebase

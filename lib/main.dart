@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:provider/provider.dart';
 import 'package:firebase_core/firebase_core.dart';
 
@@ -12,10 +13,15 @@ import 'providers/location_provider.dart';
 import 'providers/tenant_provider.dart';
 import 'screens/splash_screen.dart';
 import 'services/api_service.dart';
+import 'services/location_service.dart';
 import 'services/storage_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Open the cross-isolate communication port BEFORE runApp so the UI can
+  // receive location pings from the background foreground-service isolate.
+  FlutterForegroundTask.initCommunicationPort();
 
   // Lock orientation early
   await SystemChrome.setPreferredOrientations([
@@ -38,6 +44,10 @@ Future<void> main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+
+  // Configure the foreground-service notification channel + options up front.
+  // This is safe to call before any session is loaded.
+  await locationService.configure();
 
   // Init local storage and PRELOAD persisted state synchronously so the
   // splash screen can route deterministically (no flicker, no race).

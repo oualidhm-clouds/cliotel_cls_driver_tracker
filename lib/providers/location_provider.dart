@@ -76,6 +76,11 @@ class LocationProvider with ChangeNotifier {
     required Tenant tenant,
     required Driver driver,
   }) async {
+    // Always wire the cross-isolate data port — even if we don't start a new
+    // session, the foreground service may already be running from a previous
+    // launch and pushing locations. We want the UI to pick those up.
+    locationService.attachDataPort();
+
     // Reset transient session state so a previous driver's stats don't leak
     // into a new session.
     if (!isTracking) {
@@ -89,11 +94,58 @@ class LocationProvider with ChangeNotifier {
 
     firebaseService.initialize(tenantId: tenant.id, driver: driver);
 
-    // Auto-resume if the driver had tracking enabled before app was killed.
+    // If the foreground service survived the app being killed (which is the
+    // whole point of running it in a separate isolate), reflect that in the
+    // UI immediately.
+    final isAlreadyRunning = await locationService.isRunning();
+    if (isAlreadyRunning && !isTracking) {
+      _status = TrackingStatus.tracking;
+      _isOnline = true;
+      _sessionStart ??= DateTime.now();
+      _attachStreamListener();
+      _startUiTicker();
+      notifyListeners();
+      return;
+    }
+
+    // Auto-resume if the driver had tracking enabled before app was killed
+    // and the service didn't survive (e.g. a hard reboot).
     final wasTracking = storageService.isTrackingEnabled();
     if (wasTracking && !isTracking) {
       await startTracking();
     }
+  }
+
+  void _attachStreamListener() {
+    _locationSubscription?.cancel();
+    _locationSubscription = locationService.locationStream.listen(
+      (location) {
+        if (_currentLocation != null) {
+          _totalDistanceMeters += locationService.calculateDistance(
+            _currentLocation!.latitude,
+            _currentLocation!.longitude,
+            location.latitude,
+            location.longitude,
+          );
+        }
+        _currentLocation = location;
+        _lastUpdateTime = DateTime.now();
+        _updateCount++;
+        notifyListeners();
+      },
+      onError: (error) {
+        _error = error.toString();
+        notifyListeners();
+      },
+    );
+  }
+
+  void _startUiTicker() {
+    _uiRefreshTimer?.cancel();
+    _uiRefreshTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => notifyListeners(),
+    );
   }
 
   Future<LocationPermissionStatus> checkPermissions() async {
@@ -120,60 +172,32 @@ class LocationProvider with ChangeNotifier {
     _updateCount = 0;
     _totalDistanceMeters = 0;
 
-    // Initial fix
+    // Optimistic initial fix so the UI shows coordinates instantly while the
+    // background isolate spins up. The actual stream (and Firebase writes)
+    // come from the foreground service.
     final initialLocation = await locationService.getCurrentPosition();
     if (initialLocation != null) {
       _currentLocation = initialLocation;
       _lastUpdateTime = DateTime.now();
-      _updateCount = 1;
-      await _sendLocationToFirebase(initialLocation);
     }
 
-    final started = await locationService.startTracking(
-      distanceFilter: 0,
-      intervalMs: kLocationIntervalMs,
-    );
+    // Hand off to the foreground service. Firebase writes happen in the
+    // background isolate from now on, surviving swipe-kill.
+    final started = await locationService.startTracking();
 
     if (!started) {
       _status = TrackingStatus.error;
-      _error = 'Failed to start location tracking';
+      _error = 'Failed to start the background tracking service.';
       notifyListeners();
       return false;
     }
 
-    _locationSubscription = locationService.locationStream.listen(
-      (location) {
-        if (_currentLocation != null) {
-          _totalDistanceMeters += locationService.calculateDistance(
-            _currentLocation!.latitude,
-            _currentLocation!.longitude,
-            location.latitude,
-            location.longitude,
-          );
-        }
-        _currentLocation = location;
-        _lastUpdateTime = DateTime.now();
-        _updateCount++;
-        _sendLocationToFirebase(location);
-        notifyListeners();
-      },
-      onError: (error) {
-        _error = error.toString();
-        notifyListeners();
-      },
-    );
+    _attachStreamListener();
+    _startUiTicker();
 
     _isOnline = true;
-    await firebaseService.setOnlineStatus(true);
-
     _status = TrackingStatus.tracking;
     await storageService.setTrackingEnabled(true);
-
-    // Tick for "last update" / duration UI fields
-    _uiRefreshTimer = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) => notifyListeners(),
-    );
 
     notifyListeners();
     return true;
@@ -186,9 +210,13 @@ class LocationProvider with ChangeNotifier {
     _uiRefreshTimer?.cancel();
     _uiRefreshTimer = null;
 
+    // Stops the foreground service AND its isolate. The background handler's
+    // onDestroy marks the driver offline in Firebase before exiting.
     await locationService.stopTracking();
 
     _isOnline = false;
+    // Belt-and-braces: also nudge the offline flag from this isolate in case
+    // the service was already gone.
     await firebaseService.setOnlineStatus(false);
 
     _status = TrackingStatus.idle;
@@ -196,14 +224,6 @@ class LocationProvider with ChangeNotifier {
     await storageService.setTrackingEnabled(false);
 
     notifyListeners();
-  }
-
-  Future<void> _sendLocationToFirebase(LocationData location) async {
-    try {
-      await firebaseService.updateLocation(location);
-    } catch (_) {
-      // Network errors are expected occasionally — keep the session alive.
-    }
   }
 
   String _getPermissionErrorMessage(LocationPermissionStatus status) {
